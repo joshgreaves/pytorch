@@ -8288,17 +8288,10 @@ a")
                    .check("Traceback") \
                    .check("in foo").check("in baz").run(str(cm.exception))
 
-    def test_binop_unsupported_error(self):
-        with self.assertRaisesRegex(NotSupportedError, "unsupported binary operator:"):
-            @torch.jit.script
-            def binop(x, y):
-                # Replace this with another unsupported op when/if it gets supported
-                return x << y
-
     def test_bitwise_ops(self):
 
         def int_test():
-            return 2 & 3, 2 ^ 3, 2 | 3
+            return 2 & 3, 2 ^ 3, 2 | 3, 2 << 3, 2 >> 3
 
         self.checkScript(int_test, ())
 
@@ -8310,7 +8303,7 @@ a")
         self.checkScript(bool_test, (True, True))
 
         def tensor_test(x, y):
-            return x & y, x ^ y, x | y
+            return x & y, x ^ y, x | y, x << y, x >> y
 
         x = torch.tensor(2)
         y = torch.tensor(3)

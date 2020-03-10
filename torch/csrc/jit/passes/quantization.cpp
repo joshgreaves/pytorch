@@ -1094,6 +1094,50 @@ InsertObserversHelper::insertObserversFor(
             block_observed_values.insert(n->outputs()[i]);
           }
         }
+      } else if (n->kind() == prim::If) {
+        std::vector<size_t> aggregated_observed_outputs;
+        std::vector<c10::optional<script::Module>> aggregated_output_observers;
+        for (Block* subblock : n->blocks()) {
+          // subblock has access to all the values in the scope of prim::If,
+          // so subblock_observed_values == block_observed_values
+          auto info_from_subblock = insertObserversFor(subblock, module, block_observed_values);
+          auto input_observers = std::get<0>(info_from_subblock);
+          auto output_observers = std::get<1>(info_from_subblock);
+          auto subblock_observed_outputs = std::get<2>(info_from_subblock);
+          for (auto i = 0; i < n->inputs().size(); ++i) {
+            if (input_observers[i] && !block_inputs_outputs.count(n->inputs()[i])
+                && !block_observed_values.count(n->inputs()[i])) {
+              values_to_observe[n->input(i)] = *input_observers[i];
+              block_observed_values.insert(n->input(i));
+            }
+          }
+          if (aggregated_observed_outputs.size() > 0) {
+            TORCH_CHECK(aggregated_observed_outputs == subblock_observed_outputs,
+                        "quantization doesn't work for the case where branches "
+                        "of `if` doesn't both return quantized/non-quantized "
+                        "values");
+          } else {
+            aggregated_observed_outputs = subblock_observed_outputs;
+          }
+          if (aggregated_output_observers.size() > 0) {
+            TORCH_CHECK(aggregated_output_observers == output_observers,
+                        "quantization doesn't work for the case where branches "
+                        "of `if` doesn't both return values quantized the same "
+                        "way");
+          } else {
+            aggregated_output_observers = output_observers;
+          }
+        }
+        for (auto idx : aggregated_observed_outputs) {
+          block_observed_values.insert(n->output(idx));
+        }
+        for (auto i = 0; i < n->outputs().size(); ++i) {
+          if (aggregated_output_observers[i] && !block_inputs_outputs.count(n->output(i))
+              && !block_observed_values.count(n->outputs()[i])) {
+            values_to_observe[n->output(i)] = *aggregated_output_observers[i];
+            block_observed_values.insert(n->output(i));
+          }
+        }
       } else {
         for (Value* v : n->outputs()) {
           propagateObservedProperty(v, block_observed_values);
@@ -1104,9 +1148,9 @@ InsertObserversHelper::insertObserversFor(
             }
           }
         }
-      }
-      for (Block* subblock : n->blocks()) {
-        blocks_to_visit.push(subblock);
+        for (Block* subblock : n->blocks()) {
+          blocks_to_visit.push(subblock);
+        }
       }
     }
   }

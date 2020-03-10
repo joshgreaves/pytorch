@@ -5,6 +5,7 @@
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/distributed/rpc/rref_impl.h>
 #include <torch/csrc/distributed/rpc/types.h>
+#include <torch/csrc/utils/future.h>
 
 #include <atomic>
 
@@ -147,6 +148,14 @@ class TORCH_API RRefContext {
       const c10::intrusive_ptr<RRef>& rref);
   void delPendingUser(const ForkId& forkId);
 
+  // Start recroding new pending UserRRefs. All pending UserRRefs introduced
+  // after this point will be put into the thread_local userTable_.
+  void recordThreadLocalPendingUsers();
+  // Wait until all pending UserRRefs in userTable_ are confirmed by their
+  // owners and then clear the userTable_. This is invoked to make sure RRefs
+  // in user function args are confirmed before launching user code.
+  void waitForThreadLocalPendingUsers();
+
   void delUser(
       const worker_id_t owner,
       const RRefId& rrefId,
@@ -155,6 +164,22 @@ class TORCH_API RRefContext {
   std::unordered_map<std::string, std::string> getDebugInfo();
 
  private:
+
+  struct PendingUserState {
+    PendingUserState(c10::intrusive_ptr<RRef> rref)
+        : rref_(std::move(rref)) {}
+
+    inline void confirm() {
+      c10::static_intrusive_pointer_cast<UserRRef>(rref_)->confirm();
+      future_.markCompleted(true);
+    }
+
+    c10::intrusive_ptr<RRef> rref_;
+    // Use Future.wait() and Future.markCompleted() to block and unblock user
+    // functions. The bool value wrapped by the future_ is not used.
+    torch::utils::Future<bool> future_;
+  };
+
   RRefContext(std::shared_ptr<RpcAgent>);
 
   c10::intrusive_ptr<UserRRef> createUserRRef(
@@ -204,7 +229,7 @@ class TORCH_API RRefContext {
   //     It can be used or shared, but cannot be deleted, and hence kept alive
   //     in this map. A message of type RREF_USER_ACCEPT will remove the
   //     corresponding RRef from this map.
-  std::unordered_map<ForkId, c10::intrusive_ptr<RRef>, ForkId::Hash>
+  std::unordered_map<ForkId, std::shared_ptr<PendingUserState>, ForkId::Hash>
       pendingUsers_;
 
   // (2) A UserRRef has forked a child UserRRef which has not been accepted by
@@ -218,6 +243,11 @@ class TORCH_API RRefContext {
 
   std::mutex destroyedMutex_;
   bool destroyed_;
+
+  // Thread local states to keep UserRRefs deserialized from user function
+  // arguments.
+  static thread_local std::vector<std::shared_ptr<PendingUserState>> userTable_;
+  static thread_local bool recording;
 };
 
 } // namespace rpc
